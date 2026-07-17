@@ -634,6 +634,24 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
   const [visibleRowsCount, setVisibleRowsCount] = useState(0);
   const [isAuto100, setIsAuto100] = useState(true);
 
+  // Selection states
+  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+
+  // Custom Export Modal states
+  const [exportModal, setExportModal] = useState<{
+    isOpen: boolean;
+    step: "confirm" | "loading" | "success";
+    type: "excel" | "pdf" | "csv" | "copy";
+    progress: number;
+    rowsToExport: MasterData[];
+  }>({
+    isOpen: false,
+    step: "confirm",
+    type: "excel",
+    progress: 0,
+    rowsToExport: [],
+  });
+
   // Helper mapping function to the exact 17 columns format
   const mapToUserFormat = (row: MasterData) => {
     // Sanitize function to remove any occurence of "contoh", "contoh:", "(contoh)", etc.
@@ -912,10 +930,11 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
         totalRows
       });
 
-      // Reset pagination and visible rows count for queue
+      // Reset pagination, selection and visible rows count for queue
       setCurrentPage(1);
       setTableSearch("");
       setVisibleRowsCount(0);
+      setSelectedRowIds([]);
 
       // Fetch all database admin entries
       const adminSnap = await getDocs(masterDataCol);
@@ -1215,10 +1234,88 @@ CONTOH DATA HASIL PROSES:
     showToast("Hasil ringkasan disalin ke clipboard!", "success");
   };
 
-  // ACTION: Export to Excel
-  const handleExportExcel = () => {
-    if (resultRows.length === 0) return;
-    const rowsToExport = resultRows.map((row) => {
+  // Selection Handlers
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      const allIds = filteredRows.map(row => row.nomor);
+      setSelectedRowIds(allIds);
+    } else {
+      setSelectedRowIds([]);
+    }
+  };
+
+  const handleSelectRow = (nomor: string, checked: boolean) => {
+    if (checked) {
+      setSelectedRowIds(prev => [...prev, nomor]);
+    } else {
+      setSelectedRowIds(prev => prev.filter(id => id !== nomor));
+    }
+  };
+
+  // ACTION: Consolidated Export Trigger
+  const handleExportTrigger = (type: "excel" | "pdf" | "csv" | "copy") => {
+    console.log({
+      displayedRows: displayedRows.length,
+      selectedRows: selectedRows.length,
+      exportRows: exportRows.length
+    });
+
+    if (exportRows.length === 0) {
+      showToast("Tidak ada data hasil pencarian untuk diproses.", "error");
+      return;
+    }
+
+    const hasSelection = selectedRows.length > 0;
+
+    if (hasSelection) {
+      // Proceed directly to loading progress
+      startExportProcess(type, exportRows);
+    } else {
+      // Show confirmation dialog step
+      setExportModal({
+        isOpen: true,
+        step: "confirm",
+        type,
+        progress: 0,
+        rowsToExport: exportRows,
+      });
+    }
+  };
+
+  const startExportProcess = (type: "excel" | "pdf" | "csv" | "copy", rows: MasterData[]) => {
+    setExportModal({
+      isOpen: true,
+      step: "loading",
+      type,
+      progress: 0,
+      rowsToExport: rows,
+    });
+
+    let currentProgress = 0;
+    const interval = setInterval(() => {
+      currentProgress += 5; // smooth 20 steps progress
+      setExportModal(prev => ({
+        ...prev,
+        progress: Math.min(currentProgress, 100),
+      }));
+
+      if (currentProgress >= 100) {
+        clearInterval(interval);
+        
+        // Execute actual file output or copy summary
+        executeActualExport(type, rows);
+
+        // Transition to success screen
+        setExportModal(prev => ({
+          ...prev,
+          step: "success",
+        }));
+      }
+    }, 75); // ~1.5 seconds total duration
+  };
+
+  const executeActualExport = (type: "excel" | "pdf" | "csv" | "copy", rows: MasterData[]) => {
+    const formattedData = rows.map((row) => {
       const u = mapToUserFormat(row);
       return {
         "KPJ": u.kpj,
@@ -1233,58 +1330,99 @@ CONTOH DATA HASIL PROSES:
         "Saldo JHT": u.saldoJHT,
         "Jml Kartu": u.jmlKartu,
         "Keterangan": u.keterangan,
-        "LEGEND / INFO": u.legendInfo
+        "LEGEND / INFO": u.legendInfo || ""
       };
     });
-    const worksheet = XLSX.utils.json_to_sheet(rowsToExport);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Hasil KPJ");
-    XLSX.writeFile(workbook, `Hasil_KPJ_${nomor.trim()}.xlsx`);
-    showToast(`Berhasil mengekspor ${resultRows.length} data ke Excel!`, "success");
-  };
 
-  // ACTION: Export to PDF
-  const handleExportPDF = () => {
-    if (resultRows.length === 0) return;
-    const docPdf = new jsPDF("l", "mm", "a4"); // Landscape orientation for better spacing
-    
-    // Title
-    docPdf.setFontSize(16);
-    docPdf.text("LAPORAN HASIL PENCARIAN KPJ", 14, 15);
-    
-    // Subtitle
-    docPdf.setFontSize(9);
-    docPdf.text(`Dihasilkan pada: ${new Date().toLocaleString("id-ID")} | Total: ${resultRows.length} data`, 14, 21);
-    
-    const bodyData = resultRows.map((row, i) => {
-      const u = mapToUserFormat(row);
-      return [
-        i + 1,
-        u.kpj,
-        u.nama,
-        u.nik,
-        u.jenisKelamin,
-        u.ttl,
-        u.kabupaten,
-        u.provinsi,
-        u.statusLasik,
-        u.statusJMO,
-        u.saldoJHT,
-        u.keterangan
+    const cleanNomor = nomor.trim() || "Export";
+
+    if (type === "excel") {
+      const worksheet = XLSX.utils.json_to_sheet(formattedData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Hasil KPJ");
+      XLSX.writeFile(workbook, `Hasil_KPJ_${cleanNomor}.xlsx`);
+      showToast(`Berhasil mengekspor ${rows.length} data ke Excel!`, "success");
+    } else if (type === "pdf") {
+      const docPdf = new jsPDF("l", "mm", "a4");
+      
+      // Title
+      docPdf.setFontSize(16);
+      docPdf.text("LAPORAN HASIL PENCARIAN KPJ", 14, 15);
+      
+      // Subtitle
+      docPdf.setFontSize(9);
+      docPdf.text(`Dihasilkan pada: ${new Date().toLocaleString("id-ID")} | Total: ${rows.length} data`, 14, 21);
+      
+      const headers = ['No', 'KPJ', 'Nama', 'NIK', 'L/P', 'TTL', 'Kabupaten', 'Provinsi', 'Status Lasik', 'Status JMO', 'Saldo JHT', 'Jml Kartu', 'Keterangan'];
+      const bodyData = formattedData.map((item, idx) => [
+        idx + 1,
+        item["KPJ"],
+        item["Nama"],
+        item["NIK"],
+        item["Jenis Kelamin"],
+        item["TTL"],
+        item["Kabupaten"],
+        item["Provinsi"],
+        item["Status Lasik"],
+        item["Status JMO"],
+        item["Saldo JHT"],
+        item["Jml Kartu"],
+        item["Keterangan"]
+      ]);
+
+      autoTable(docPdf, {
+        startY: 27,
+        head: [headers],
+        body: bodyData,
+        theme: 'striped',
+        styles: { fontSize: 6, cellPadding: 1.2 },
+        headStyles: { fillColor: [217, 119, 6] },
+      });
+
+      docPdf.save(`Hasil_KPJ_${cleanNomor}.pdf`);
+      showToast(`Laporan PDF (${rows.length} data) berhasil didownload!`, "success");
+    } else if (type === "csv") {
+      if (formattedData.length === 0) return;
+      const headers = Object.keys(formattedData[0]);
+      const csvRows = [
+        headers.join(","), // header row
+        ...formattedData.map(row => 
+          headers.map(fieldName => {
+            const value = String(row[fieldName as keyof typeof row] || "").replace(/"/g, '""');
+            return `"${value}"`;
+          }).join(",")
+        )
       ];
-    });
+      const csvContent = "\uFEFF" + csvRows.join("\n"); // Add BOM for Excel compatibility
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `Hasil_KPJ_${cleanNomor}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast(`Berhasil mengekspor ${rows.length} data ke CSV!`, "success");
+    } else if (type === "copy") {
+      let text = `
+BOING GACOR - LAPORAN HASIL PENCARIAN MULTI-ROW (TERPILIH)
+=========================================================
+Nomor KPJ Utama: ${resultData?.nomor || "-"}
+Nama Utama     : ${resultData?.nama || "-"}
+Total Baris    : ${rows.length}
+Waktu Export   : ${new Date().toLocaleString("id-ID")}
+=========================================================
 
-    autoTable(docPdf, {
-      startY: 27,
-      head: [['No', 'KPJ', 'Nama', 'NIK', 'L/P', 'TTL', 'Kabupaten', 'Provinsi', 'Status Lasik', 'Status JMO', 'Saldo JHT', 'Keterangan']],
-      body: bodyData,
-      theme: 'striped',
-      styles: { fontSize: 6, cellPadding: 1.2 },
-      headStyles: { fillColor: [217, 119, 6] }, // amber accent
-    });
+DATA HASIL PROSES:
+`.trim();
 
-    docPdf.save(`Hasil_KPJ_${nomor.trim()}.pdf`);
-    showToast(`Laporan PDF (${resultRows.length} data) berhasil didownload!`, "success");
+      formattedData.forEach((row, i) => {
+        text += `\n[${i + 1}] KPJ: ${row["KPJ"]} | Nama: ${row["Nama"]} | Saldo: ${row["Saldo JHT"]} | Ket: ${row["Keterangan"]}`;
+      });
+
+      navigator.clipboard.writeText(text);
+      showToast("Hasil ringkasan disalin ke clipboard!", "success");
+    }
   };
 
   // ACTION: Print Table
@@ -1306,6 +1444,13 @@ CONTOH DATA HASIL PROSES:
   const totalPages = Math.ceil(filteredRows.length / rowsPerPage);
   const startIndex = (currentPage - 1) * rowsPerPage;
   const paginatedRows = filteredRows.slice(startIndex, startIndex + rowsPerPage);
+
+  const displayedRows = paginatedRows;
+  const selectedRows = filteredRows.filter(row => selectedRowIds.includes(row.nomor));
+  const exportRows = selectedRows.length > 0 ? selectedRows : displayedRows;
+
+  const isAllSelected = filteredRows.length > 0 && filteredRows.every(row => selectedRowIds.includes(row.nomor));
+  const isSomeSelected = filteredRows.length > 0 && filteredRows.some(row => selectedRowIds.includes(row.nomor)) && !isAllSelected;
 
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 font-sans text-gray-100 flex flex-col justify-between overflow-x-hidden p-4 md:p-6 print:bg-white print:text-black">
@@ -1490,6 +1635,34 @@ CONTOH DATA HASIL PROSES:
                 })}
               </div>
 
+              {/* Real-time Processing Stats Grid */}
+              <div className="w-full grid grid-cols-2 gap-3 bg-white/5 border border-white/10 rounded-2xl p-4 text-xs">
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-400 font-mono text-[9px] uppercase tracking-wider">Status Berjalan</span>
+                  <span className="text-amber-400 font-bold truncate">
+                    {steps[currentStepIndex]}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-400 font-mono text-[9px] uppercase tracking-wider">Estimasi Sisa Waktu</span>
+                  <span className="text-indigo-400 font-bold font-mono">
+                    ~{Math.max(0, Math.ceil(25 * (100 - progress) / 100))} detik
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-400 font-mono text-[9px] uppercase tracking-wider">Data Terproses</span>
+                  <span className="text-emerald-400 font-bold font-mono">
+                    {isAuto100 ? `${progress} / 100` : `${progress >= 100 ? 1 : 0} / 1`} Data
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-400 font-mono text-[9px] uppercase tracking-wider">Persentase</span>
+                  <span className="text-white font-black font-mono">
+                    {progress}%
+                  </span>
+                </div>
+              </div>
+
               <div className="text-gray-400 text-xs font-mono animate-pulse flex items-center gap-1.5">
                 <Database className="w-4 h-4 text-amber-500" />
                 Mohon tunggu sebentar...
@@ -1577,41 +1750,59 @@ CONTOH DATA HASIL PROSES:
               {resultData ? (
                 <>
                   {/* Table Control and Actions Bar */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50 border border-slate-200 rounded-2xl p-4 print:hidden">
-                    {/* Search Field */}
-                    <div className="relative flex-1 max-w-sm">
-                      <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                      <input
-                        type="text"
-                        value={tableSearch}
-                        onChange={(e) => {
-                          setTableSearch(e.target.value);
-                          setCurrentPage(1);
-                        }}
-                        placeholder="Cari dalam tabel..."
-                        className="w-full bg-white border border-slate-200 rounded-xl py-2 pl-9 pr-4 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-indigo-500"
-                      />
+                  <div className="flex flex-col gap-3 print:hidden">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50 border border-slate-200 rounded-2xl p-4">
+                      {/* Search Field */}
+                      <div className="relative flex-1 max-w-sm">
+                        <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                        <input
+                          type="text"
+                          value={tableSearch}
+                          onChange={(e) => {
+                            setTableSearch(e.target.value);
+                            setCurrentPage(1);
+                          }}
+                          placeholder="Cari dalam tabel..."
+                          className="w-full bg-white border border-slate-200 rounded-xl py-2 pl-9 pr-4 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      {/* Pagination Rows selection */}
+                      <div className="flex items-center gap-2 text-xs text-slate-600">
+                        <span>Tampilkan:</span>
+                        <select
+                          value={rowsPerPage}
+                          onChange={(e) => {
+                            setRowsPerPage(Number(e.target.value));
+                            setCurrentPage(1);
+                          }}
+                          className="bg-white border border-slate-200 text-slate-800 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500"
+                        >
+                          <option value={5}>5</option>
+                          <option value={10}>10</option>
+                          <option value={25}>25</option>
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                        </select>
+                        <span>baris</span>
+                      </div>
                     </div>
 
-                    {/* Pagination Rows selection */}
-                    <div className="flex items-center gap-2 text-xs text-slate-600">
-                      <span>Tampilkan:</span>
-                      <select
-                        value={rowsPerPage}
-                        onChange={(e) => {
-                          setRowsPerPage(Number(e.target.value));
-                          setCurrentPage(1);
-                        }}
-                        className="bg-white border border-slate-200 text-slate-800 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value={5}>5</option>
-                        <option value={10}>10</option>
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                      </select>
-                      <span>baris</span>
-                    </div>
+                    {/* Selection Status Banner */}
+                    {selectedRowIds.length > 0 && (
+                      <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 rounded-2xl px-4 py-3 text-xs text-indigo-950 font-semibold shadow-sm animate-fadeIn">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+                          <span>Terpilih <strong className="text-indigo-600 font-black">{selectedRowIds.length}</strong> data hasil pencarian</span>
+                        </div>
+                        <button
+                          onClick={() => setSelectedRowIds([])}
+                          className="text-indigo-600 hover:text-indigo-800 font-bold transition hover:underline cursor-pointer"
+                        >
+                          Bersihkan Pilihan
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Multi-Row Table (Excel Spreadsheet Layout) */}
@@ -1620,6 +1811,19 @@ CONTOH DATA HASIL PROSES:
                       <thead>
                         <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider whitespace-nowrap">
                           <th className="p-3 w-12 text-center">No</th>
+                          <th className="p-3 w-10 text-center print:hidden">
+                            <input
+                              type="checkbox"
+                              checked={isAllSelected}
+                              ref={el => {
+                                if (el) {
+                                  el.indeterminate = isSomeSelected;
+                                }
+                              }}
+                              onChange={(e) => handleSelectAll(e.target.checked)}
+                              className="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500 cursor-pointer"
+                            />
+                          </th>
                           <th className="p-3">KPJ</th>
                           <th className="p-3">Nama</th>
                           <th className="p-3">NIK</th>
@@ -1641,6 +1845,7 @@ CONTOH DATA HASIL PROSES:
                             const actualIdx = startIndex + idx + 1;
                             const isPrimaryRow = row.nomor.trim().replace(/\s+/g, "") === resultData.nomor.trim().replace(/\s+/g, "");
                             const u = mapToUserFormat(row);
+                            const isChecked = selectedRowIds.includes(row.nomor);
                             return (
                               <tr 
                                 key={idx} 
@@ -1656,6 +1861,14 @@ CONTOH DATA HASIL PROSES:
                                   ) : (
                                     actualIdx
                                   )}
+                                </td>
+                                <td className="p-3 text-center print:hidden">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => handleSelectRow(row.nomor, e.target.checked)}
+                                    className="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500 cursor-pointer"
+                                  />
                                 </td>
                                 <td className={`p-3 font-bold font-mono ${isPrimaryRow ? "text-amber-700" : "text-amber-600"}`}>{u.kpj}</td>
                                 <td className="p-3 text-slate-900 font-bold">{u.nama}</td>
@@ -1681,7 +1894,7 @@ CONTOH DATA HASIL PROSES:
                           })
                         ) : (
                           <tr>
-                            <td colSpan={14} className="p-8 text-center text-slate-400 italic">
+                            <td colSpan={15} className="p-8 text-center text-slate-400 italic">
                               Tidak ada data yang cocok dengan pencarian Anda atau data sedang dimuat secara berurutan...
                             </td>
                           </tr>
@@ -1749,31 +1962,43 @@ CONTOH DATA HASIL PROSES:
                   )}
 
                   {/* Actions Buttons */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 print:hidden">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3 print:hidden">
                     <button
-                      onClick={handleCopy}
-                      className="flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl py-3 px-4 text-xs font-bold transition active:scale-95 cursor-pointer border border-slate-300"
+                      disabled={exportModal.isOpen && exportModal.step === "loading"}
+                      onClick={() => handleExportTrigger("copy")}
+                      className="flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl py-3 px-3 text-xs font-bold transition active:scale-95 cursor-pointer border border-slate-300 disabled:opacity-50 disabled:pointer-events-none"
                     >
                       <Copy className="w-4 h-4 text-slate-500" />
                       COPY SUMMARY
                     </button>
                     <button
-                      onClick={handleExportExcel}
-                      className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-3 px-4 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-emerald-600/10"
+                      disabled={exportModal.isOpen && exportModal.step === "loading"}
+                      onClick={() => handleExportTrigger("excel")}
+                      className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-3 px-3 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-emerald-600/10 disabled:opacity-50 disabled:pointer-events-none"
                     >
                       <FileSpreadsheet className="w-4 h-4" />
-                      EXPORT EXCEL ({resultRows.length})
+                      EXPORT EXCEL
                     </button>
                     <button
-                      onClick={handleExportPDF}
-                      className="flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl py-3 px-4 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-rose-600/10"
+                      disabled={exportModal.isOpen && exportModal.step === "loading"}
+                      onClick={() => handleExportTrigger("pdf")}
+                      className="flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl py-3 px-3 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-rose-600/10 disabled:opacity-50 disabled:pointer-events-none"
                     >
                       <FileDown className="w-4 h-4" />
                       EXPORT PDF
                     </button>
                     <button
+                      disabled={exportModal.isOpen && exportModal.step === "loading"}
+                      onClick={() => handleExportTrigger("csv")}
+                      className="flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl py-3 px-3 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-amber-600/10 disabled:opacity-50 disabled:pointer-events-none"
+                    >
+                      <FileDown className="w-4 h-4" />
+                      EXPORT CSV
+                    </button>
+                    <button
+                      disabled={exportModal.isOpen && exportModal.step === "loading"}
                       onClick={handlePrint}
-                      className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3 px-4 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-blue-600/10"
+                      className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3 px-3 text-xs font-bold transition active:scale-95 cursor-pointer shadow-lg shadow-blue-600/10 col-span-2 md:col-span-1 disabled:opacity-50 disabled:pointer-events-none"
                     >
                       <Printer className="w-4 h-4" />
                       PRINT TABEL
@@ -1801,6 +2026,126 @@ CONTOH DATA HASIL PROSES:
           )}
         </AnimatePresence>
       </main>
+
+      {/* EXPORT PROGRESS AND CONFIRMATION MODAL */}
+      <AnimatePresence>
+        {exportModal.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (exportModal.step !== "loading") {
+                  setExportModal(prev => ({ ...prev, isOpen: false }));
+                }
+              }}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+
+            {/* Modal Body */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl border border-slate-200 p-6 shadow-2xl max-w-md w-full relative z-10 flex flex-col gap-6 text-slate-800 animate-fadeIn"
+            >
+              {exportModal.step === "confirm" && (
+                <>
+                  <div className="flex gap-4 items-start">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-600 flex-shrink-0">
+                      <AlertCircle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-extrabold text-slate-900 leading-snug">
+                        Tidak ada data yang dipilih
+                      </h4>
+                      <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                        Anda tidak mencentang data apa pun di tabel. Apakah Anda ingin mengekspor semua data yang sedang tampil di layar ({exportModal.rowsToExport.length} data)?
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2.5">
+                    <button
+                      onClick={() => setExportModal(prev => ({ ...prev, isOpen: false }))}
+                      className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-50 border border-slate-200 transition cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      onClick={() => startExportProcess(exportModal.type, exportModal.rowsToExport)}
+                      className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/10 transition cursor-pointer"
+                    >
+                      Ya, Ekspor Semua
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {exportModal.step === "loading" && (
+                <div className="flex flex-col items-center text-center gap-5 py-2">
+                  <div className="relative w-16 h-16 flex items-center justify-center">
+                    <RefreshCw className="w-10 h-10 text-indigo-600 animate-spin" />
+                  </div>
+
+                  <div>
+                    <h4 className="text-lg font-black text-slate-900">
+                      Sedang menyiapkan file...
+                    </h4>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Mohon tunggu, proses ekspor data sedang berlangsung.
+                    </p>
+                  </div>
+
+                  {/* Progress Bar Container */}
+                  <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden border border-slate-200 mt-2">
+                    <motion.div
+                      className="bg-gradient-to-r from-indigo-500 to-fuchsia-500 h-full rounded-full"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${exportModal.progress}%` }}
+                      transition={{ ease: "easeOut" }}
+                    />
+                  </div>
+
+                  <span className="text-xs font-bold text-indigo-600 font-mono">
+                    {exportModal.progress}% Selesai
+                  </span>
+                </div>
+              )}
+
+              {exportModal.step === "success" && (
+                <>
+                  <div className="flex flex-col items-center text-center gap-5 py-2">
+                    <div className="w-14 h-14 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-500 shadow-sm animate-bounce">
+                      <CheckCircle2 className="w-8 h-8 fill-emerald-50" />
+                    </div>
+
+                    <div>
+                      <h4 className="text-lg font-black text-slate-900">
+                        Ekspor Berhasil!
+                      </h4>
+                      <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                        Data berhasil diproses dan file Anda siap digunakan.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-center">
+                    <button
+                      onClick={() => setExportModal(prev => ({ ...prev, isOpen: false }))}
+                      className="w-full sm:w-auto px-8 py-2.5 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white transition cursor-pointer shadow-md"
+                    >
+                      Selesai
+                    </button>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Footer copyright */}
       <footer className="py-4 text-center text-[10px] text-gray-500 font-mono tracking-widest border-t border-white/5 mt-8 print:hidden">
