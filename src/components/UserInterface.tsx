@@ -915,13 +915,12 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       const last3 = cleanKpj.slice(-3).padStart(3, "0");
       
       // Deterministic Scramble of last 3 digits
-      // Swap positions or reverse to make it dynamic
       const scrambled = last3.split("").reverse().join("");
       const scrambledNum = parseInt(scrambled) || 0;
       
       // Multiplier info for display
       const multiplier = (scrambledNum % 9) + 1;
-      const totalRows = 100; // Locked to exactly 100 rows per request
+      const totalRows = 100; // Locked to maximum 100 rows per request
       
       setMultiplierInfo({
         last3,
@@ -933,7 +932,6 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       // Reset pagination, selection and visible rows count for queue
       setCurrentPage(1);
       setTableSearch("");
-      setVisibleRowsCount(0);
       setSelectedRowIds([]);
 
       // Fetch all database admin entries
@@ -961,172 +959,28 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
         };
       };
 
-      // Separate actual imported admin Excel rows from simulated ones
-      const actualExcelRows = adminRows.filter(row => !row.isSimulated);
-      
-      // If no actual Excel rows exist, fall back to the whole collection
-      const excelSourcePool = actualExcelRows.length > 0 ? actualExcelRows : adminRows;
-
-      // Check primary KPJ in the loaded admin rows (to find actual or previously simulated matches)
-      const cleanNomor = nomor.trim().replace(/\s+/g, "");
-      let primaryData = adminRows.find(row => row.nomor.trim().replace(/\s+/g, "") === cleanNomor);
-      let isNewPrimary = false;
-      
-      if (!primaryData) {
-        primaryData = generateRandomKPJData(cleanNomor);
-        isNewPrimary = true;
-      }
+      // Separate actual imported admin Excel rows (those without isSimulated === true)
+      const actualExcelRows = adminRows
+        .filter(row => row.isSimulated !== true)
+        .map(row => sanitizeMasterData(row));
 
       // Year prefix is the first 2 digits of the user's queried KPJ number
       const yearPrefix = cleanKpj.substring(0, 2) || "24";
 
-      const adjustKpjWithYearPrefix = (originalKpj: string, prefix: string) => {
-        const clean = originalKpj.trim().replace(/\D/g, "");
-        if (clean.length <= 2) {
-          return prefix + clean;
-        }
-        return prefix + clean.substring(2);
-      };
-
-      const adjustedPrimaryData = sanitizeMasterData({
-        ...primaryData,
-        nomor: cleanNomor
+      // Match only rows under that yearPrefix
+      const matchedRows = actualExcelRows.filter(row => {
+        const rowKpj = row.nomor.replace(/\D/g, "");
+        return rowKpj.startsWith(yearPrefix);
       });
-      setResultData(adjustedPrimaryData);
 
-      if (isNewPrimary) {
-        // Save primary data permanently to Firestore
-        await setDoc(doc(db, "master_data", adjustedPrimaryData.nomor), adjustedPrimaryData);
-      }
+      // Find the primaryData (exact match if exists, otherwise first matched row, or null)
+      const cleanNomor = nomor.trim().replace(/\s+/g, "");
+      const exactMatch = matchedRows.find(row => row.nomor.replace(/\s+/g, "") === cleanNomor);
+      const primaryData = exactMatch || (matchedRows.length > 0 ? matchedRows[0] : null);
 
-      // Compositing dataset: 100% from admin database, topped up by user simulated/processed data if not enough to reach 100
-      if (isAuto100) {
-        // Find other rows in the excel source pool (excluding the primary row)
-        const otherExcelRows = excelSourcePool.filter(row => row.nomor.trim().replace(/\s+/g, "") !== cleanNomor);
-        
-        // We want exactly 99 other rows. If otherExcelRows has fewer, we top it up with simulated user rows.
-        const adminCount = Math.min(99, otherExcelRows.length);
-        const userCount = 99 - adminCount;
-
-        // Pools of standard, clean Indonesian names (absolutely no public figures)
-        const FIRST_NAMES = [
-          "AHMAD", "BUDI", "CHANDRA", "DEDI", "EKO", "FAJAR", "GUNTUR", "HADI", "INDRA", "JOKO",
-          "KURNIAWAN", "LUTFI", "MAULANA", "NUGROHO", "OKI", "PRASETYO", "RIAN", "SETYAWAN", "TAUFIK", "UMAR",
-          "WAWAN", "YUDI", "ZAINAL", "ANISA", "CITRA", "DEWI", "EKA", "FITRI", "GITA", "HANA",
-          "INDAH", "KARTIKA", "LARAS", "MEGA", "NOVI", "PUTRI", "RINA", "SARI", "TARI", "UTAMI",
-          "WULAN", "YULIA", "ARIF", "BAMBANG", "CAHYO", "DIMAS", "EDI", "FARHAN", "HERI", "IRFAN"
-        ];
-
-        const LAST_NAMES = [
-          "SANTOSO", "HIDAYAT", "PRATAMA", "WIJAYA", "SURYONO", "KUSUMA", "WIBOWO", "NUGRAHA", "SAPUTRA", "LESTARI",
-          "PERTIWI", "SETIAWAN", "RAMADHAN", "SIREGAR", "NASUTION", "SITUMORANG", "GINTING", "SIMANJUNTAK", "HUTAPEA", "PANGARIBUAN",
-          "MANURUNG", "SINAGA", "SITORUS", "PURBA", "TANJUNG", "LUBIS", "HARAHAP", "PANE", "SIAHAAN", "BATUBARA",
-          "KURNIA", "SUPRIATNA", "GUNAWAN", "YUSUF", "FIRMANSYAH", "BUDIMAN", "SUBAGYO", "HARTONO", "DARMAWAN", "SUJATMIKO"
-        ];
-
-        const generatedNames = new Set<string>();
-        // Add admin rows names to Set to avoid any replication with admin data names
-        adminRows.forEach(row => {
-          if (row && row.nama) {
-            generatedNames.add(row.nama.trim().toUpperCase());
-          }
-        });
-
-        const getUniqueSimulatedName = (seed: number): string => {
-          let attempt = 0;
-          while (attempt < 2000) {
-            const fnIdx = (seed + attempt * 17) % FIRST_NAMES.length;
-            const lnIdx = (seed + attempt * 31 + 5) % LAST_NAMES.length;
-            const fullName = `${FIRST_NAMES[fnIdx]} ${LAST_NAMES[lnIdx]}`;
-            if (!generatedNames.has(fullName)) {
-              generatedNames.add(fullName);
-              return fullName;
-            }
-            attempt++;
-          }
-          return `SINKRONISASI PENGGUNA ${seed}`;
-        };
-
-        // Generate simulated rows with varied nomor based on base number to top up to 100 rows
-        const userRowsList: MasterData[] = [];
-        for (let i = 0; i < userCount; i++) {
-          const baseNum = parseInt(cleanKpj) || 1000000;
-          const variedNomor = String(baseNum + (i + 1) * 7 + (scrambledNum % 13) + 1).padStart(cleanKpj.length || 11, "0");
-          const userRow = generateRandomKPJData(variedNomor);
-          
-          // Overwrite with a unique name that is not a public figure
-          userRow.nama = getUniqueSimulatedName(baseNum + i * 13 + scrambledNum);
-          
-          // Pick a random admin row to mimic NIK and Saldo base format
-          const mimicSource = otherExcelRows.length > 0 
-            ? otherExcelRows[Math.floor(Math.random() * otherExcelRows.length)]
-            : adjustedPrimaryData;
-          
-          // Replace last 4 digits of mimicSource NIK with sequential suffix (0001, 0002, 0003, ...)
-          const baseIdentitas = mimicSource.identitas && mimicSource.identitas.length >= 12
-            ? mimicSource.identitas.substring(0, 12)
-            : "320112345678";
-          const sequentialSuffix = String(i + 1).padStart(4, "0");
-          userRow.identitas = `${baseIdentitas}${sequentialSuffix}`;
-          
-          // Generate completely randomized, unique and different balances (saldos) in millions or hundreds of thousands
-          const seedVal = Math.abs(parseInt(variedNomor) || (i * 12345 + 54321)) + i;
-          const randomType = seedVal % 2; // Alternating hundreds of thousands vs millions
-          if (randomType === 0) {
-            // Hundreds of thousands: e.g. 200.000 to 950.000 (unique, varied)
-            userRow.saldo = 200000 + ((seedVal * 17) % 8) * 100000 + ((seedVal * 31) % 10) * 10000 + ((seedVal * 43) % 10) * 1000;
-          } else {
-            // Millions: e.g. 1.000.000 to 14.500.000 (unique, varied)
-            userRow.saldo = 1000000 + ((seedVal * 19) % 14) * 1000000 + ((seedVal * 29) % 10) * 100000 + ((seedVal * 41) % 10) * 10000;
-          }
-
-          // Use the actual keterangan and pesan of the synchronized admin/primary KPJ
-          userRow.keterangan = adjustedPrimaryData.keterangan || mimicSource.keterangan || "Sesuai Data Kependudukan";
-          userRow.pesan = adjustedPrimaryData.pesan || mimicSource.pesan || "Silahkan melanjutkan pendaftaran";
-          
-          userRowsList.push(userRow);
-        }
-
-        const shuffledAdmin = [...otherExcelRows].sort(() => Math.random() - 0.5);
-        const otherAdminRowsList = shuffledAdmin.slice(0, adminCount);
-
-        // Combine userRowsList and otherAdminRowsList and shuffle them
-        const combined = [...userRowsList, ...otherAdminRowsList];
-        const shuffled = combined.sort(() => Math.random() - 0.5);
-
-        // Map and rewrite the front of the KPJ numbers to match the user's input year prefix
-        const adjustedShuffled = shuffled.map(row => sanitizeMasterData({
-          ...row,
-          nomor: adjustKpjWithYearPrefix(row.nomor, yearPrefix)
-        }));
-
-        // Put the exact adjusted primary data row at index 0 of the final list
-        const finalResultRows = [adjustedPrimaryData, ...adjustedShuffled];
-
-        // Write any newly generated rows to Firestore permanently
-        try {
-          const batch = writeBatch(db);
-          let newCount = 0;
-          for (const r of finalResultRows) {
-            const alreadyInAdmin = adminRows.some(x => x.nomor === r.nomor);
-            if (!alreadyInAdmin) {
-              const docRef = doc(db, "master_data", r.nomor);
-              batch.set(docRef, r);
-              newCount++;
-            }
-          }
-          if (newCount > 0) {
-            await batch.commit();
-          }
-        } catch (dbErr) {
-          console.error("Failed to save newly generated rows to Firestore:", dbErr);
-        }
-
-        setResultRows(finalResultRows);
-      } else {
-        // Only return the single queried primary row
-        setResultRows([adjustedPrimaryData]);
-      }
+      setResultData(primaryData);
+      setResultRows(matchedRows);
+      setVisibleRowsCount(matchedRows.length);
 
       // Save complete history status
       const savedProc = localStorage.getItem(`current_process_${token.id}`);
@@ -1518,20 +1372,10 @@ DATA HASIL PROSES:
                   />
                 </div>
 
-                {/* Auto Option Toggle (Opsi Pembuatan Otomatis 100 Untuk Pengguna) */}
+                {/* Real Excel Admin Verification Badge */}
                 <div className="flex items-center justify-between bg-white/5 border border-white/5 rounded-2xl p-3 px-4 text-xs">
-                  <span className="text-gray-300 font-medium">Opsi Pembuatan Otomatis (100 Hasil)</span>
-                  <button
-                    type="button"
-                    onClick={() => setIsAuto100(!isAuto100)}
-                    className="text-amber-400 focus:outline-none cursor-pointer transition active:scale-95"
-                  >
-                    {isAuto100 ? (
-                      <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-lg font-bold text-[10px]">AKTIF (100 BARIS)</span>
-                    ) : (
-                      <span className="bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg font-bold text-[10px]">MATI (1 BARIS)</span>
-                    )}
-                  </button>
+                  <span className="text-gray-300 font-medium">Metode Verifikasi</span>
+                  <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-lg font-bold text-[10px]">REAL EXCEL ADMIN</span>
                 </div>
 
                 <button
@@ -1557,7 +1401,7 @@ DATA HASIL PROSES:
             </motion.div>
           )}
 
-          {/* SCREEN 2: 10-Second Processing */}
+          {/* SCREEN 2: 25-Second Processing */}
           {screen === "PROCESSING" && (
             <motion.div
               key="processing-screen"
@@ -1565,11 +1409,15 @@ DATA HASIL PROSES:
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.3 }}
-              className="w-full max-w-lg bg-white/5 dark:bg-slate-900/40 backdrop-blur-xl border border-white/10 rounded-3xl p-8 shadow-2xl flex flex-col items-center gap-8 relative"
+              className="w-full max-w-lg bg-white/5 dark:bg-slate-900/40 backdrop-blur-xl border border-white/10 rounded-3xl p-8 shadow-2xl flex flex-col items-center gap-8 relative animate-fadeIn"
             >
-              <div className="text-center">
-                <h3 className="text-2xl font-black text-white tracking-wide">Proses Sedang Berjalan...</h3>
-                <p className="text-xs text-amber-400 mt-1 font-medium">Jangan menutup atau memuat ulang halaman</p>
+              <div className="text-center flex flex-col gap-1">
+                <h3 className="text-xl font-bold text-amber-400 tracking-wide">Sedang mengambil data Excel Admin...</h3>
+                <p className="text-sm font-semibold text-white">Progress... {progress}%</p>
+                {progress >= 100 && (
+                  <p className="text-xs text-emerald-400 font-bold mt-1">Selesai mengambil data dari Excel Admin.</p>
+                )}
+                <p className="text-[10px] text-slate-400 mt-2 font-medium">Jangan menutup atau memuat ulang halaman</p>
               </div>
 
               {/* Circular Percentage Loader */}
@@ -1737,17 +1585,18 @@ DATA HASIL PROSES:
               )}
 
               {/* Data Composition Metrics Banner */}
-              {multiplierInfo && (
-                <div className="flex justify-center">
-                  <div className="w-full max-w-md bg-slate-50 border border-slate-150 rounded-2xl p-4 flex flex-col items-center justify-center text-center">
-                    <span className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Total Baris Terproses</span>
-                    <span className="text-2xl font-black text-amber-600 mt-1">{resultRows.length} Baris</span>
-                    <span className="text-[10px] text-slate-400 mt-0.5">Integrasi Database Utama & Admin Berhasil</span>
+              <div className="flex justify-center">
+                <div className="w-full max-w-md bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col items-center justify-center text-center gap-1.5 font-sans">
+                  <span className="text-[11px] text-slate-500 font-mono uppercase tracking-widest font-bold">INFORMASI DATABASE SINKRONISASI</span>
+                  <div className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+                    <div>Data ditemukan : <strong className="text-indigo-600 font-extrabold text-sm">{resultRows.length}</strong></div>
+                    <div>Maksimum tampilan : <strong className="text-slate-900 font-bold">100</strong></div>
+                    <div>Sumber data : <strong className="text-emerald-600 font-bold">Excel Admin</strong></div>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {resultData ? (
+              {resultRows.length > 0 ? (
                 <>
                   {/* Table Control and Actions Bar */}
                   <div className="flex flex-col gap-3 print:hidden">
@@ -1843,7 +1692,7 @@ DATA HASIL PROSES:
                         {filteredRows.length > 0 ? (
                           paginatedRows.map((row, idx) => {
                             const actualIdx = startIndex + idx + 1;
-                            const isPrimaryRow = row.nomor.trim().replace(/\s+/g, "") === resultData.nomor.trim().replace(/\s+/g, "");
+                            const isPrimaryRow = resultData && row.nomor.trim().replace(/\s+/g, "") === resultData.nomor.trim().replace(/\s+/g, "");
                             const u = mapToUserFormat(row);
                             const isChecked = selectedRowIds.includes(row.nomor);
                             return (
@@ -2010,9 +1859,9 @@ DATA HASIL PROSES:
                   <div className="w-14 h-14 rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-500 mb-4 animate-bounce">
                     <AlertCircle className="w-8 h-8" />
                   </div>
-                  <h4 className="text-lg font-bold text-slate-900">Data tidak tersedia.</h4>
+                  <h4 className="text-base font-bold text-slate-900">Tidak ada data Excel Admin untuk kelompok tahun ini.</h4>
                   <p className="text-xs text-slate-500 text-center mt-1.5 max-w-sm">
-                    Nomor yang Anda masukkan belum terdaftar dalam database kami. Pastikan nomor benar dan coba lagi.
+                    Sistem tidak menemukan baris data asli dari Excel Admin yang cocok dengan kelompok tahun KPJ ini.
                   </p>
                   <button
                     onClick={() => setScreen("INPUT")}
