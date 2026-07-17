@@ -1,0 +1,6 @@
+{
+  "name": "BOING GACOR",
+  "description": "Aplikasi web modern untuk verifikasi, sinkronisasi, dan pengelolaan data BOING GACOR dengan Firebase dan Excel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
