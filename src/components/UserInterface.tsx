@@ -1226,7 +1226,6 @@ CONTOH DATA HASIL PROSES:
         "NIK": u.nik,
         "Jenis Kelamin": u.jenisKelamin,
         "TTL": u.ttl,
-        "Ibu Kandung": u.ibuKandung,
         "Kabupaten": u.kabupaten,
         "Provinsi": u.provinsi,
         "Status Lasik": u.statusLasik,
@@ -1626,7 +1625,6 @@ CONTOH DATA HASIL PROSES:
                           <th className="p-3">NIK</th>
                           <th className="p-3">Jenis Kelamin</th>
                           <th className="p-3">TTL</th>
-                          <th className="p-3">Ibu Kandung</th>
                           <th className="p-3">Kabupaten</th>
                           <th className="p-3">Provinsi</th>
                           <th className="p-3">Status Lasik</th>
@@ -1670,7 +1668,6 @@ CONTOH DATA HASIL PROSES:
                                   </span>
                                 </td>
                                 <td className="p-3 text-slate-700 font-mono">{u.ttl}</td>
-                                <td className="p-3 text-slate-700 font-semibold">{u.ibuKandung}</td>
                                 <td className="p-3 text-slate-600">{u.kabupaten}</td>
                                 <td className="p-3 text-slate-600">{u.provinsi}</td>
                                 <td className="p-3 font-semibold font-mono text-indigo-600">{u.statusLasik}</td>
@@ -1684,7 +1681,7 @@ CONTOH DATA HASIL PROSES:
                           })
                         ) : (
                           <tr>
-                            <td colSpan={15} className="p-8 text-center text-slate-400 italic">
+                            <td colSpan={14} className="p-8 text-center text-slate-400 italic">
                               Tidak ada data yang cocok dengan pencarian Anda atau data sedang dimuat secara berurutan...
                             </td>
                           </tr>
