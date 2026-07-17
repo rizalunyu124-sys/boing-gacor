@@ -319,6 +319,62 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
     }
   };
 
+  const parseExcelDate = (val: any): string => {
+    if (val === undefined || val === null) return "";
+    let str = String(val).trim();
+    if (!str) return "";
+
+    // 1. If it's a number (Excel serial date)
+    const isNumOnly = /^\d+$/.test(str);
+    if (typeof val === "number" || isNumOnly) {
+      const num = Number(val);
+      if (num > 10000 && num < 60000) { // realistic range for birthdays (1927 to 2064)
+        try {
+          const date = new Date(Math.round((num - 25568) * 24 * 3600 * 1000));
+          const d = String(date.getDate()).padStart(2, "0");
+          const m = String(date.getMonth() + 1).padStart(2, "0");
+          const y = date.getFullYear();
+          return `${d}-${m}-${y}`;
+        } catch (e) {
+          // ignore and fallback
+        }
+      }
+    }
+
+    // 2. Direct Regex matching of YYYY-MM-DD anywhere in the string
+    const matchYmd = str.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (matchYmd) {
+      const y = matchYmd[1];
+      const m = matchYmd[2].padStart(2, "0");
+      const d = matchYmd[3].padStart(2, "0");
+      return `${d}-${m}-${y}`;
+    }
+
+    // 3. Direct Regex matching of DD-MM-YYYY anywhere in the string
+    // This handles: ", 10-03-1992", "KUIN, 26-05-1988", "26/05/1988", etc.
+    const matchDmy = str.match(/(\d{1,2})[-/.\s](\d{1,2})[-/.\s](\d{2,4})/);
+    if (matchDmy) {
+      const d = matchDmy[1].padStart(2, "0");
+      const m = matchDmy[2].padStart(2, "0");
+      let y = matchDmy[3];
+      if (y.length === 2) {
+        y = parseInt(y) > 30 ? "19" + y : "20" + y;
+      }
+      return `${d}-${m}-${y}`;
+    }
+
+    // 4. Fallback if commas exist but no match found
+    if (str.includes(",")) {
+      const parts = str.split(",");
+      const datePart = parts[parts.length - 1]?.trim();
+      if (datePart) {
+        return datePart;
+      }
+    }
+
+    return str;
+  };
+
   const processExcelFile = (file: File) => {
     const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls");
     if (!isExcel) {
@@ -361,8 +417,35 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
             const nomorRaw = row.Nomor || row.nomor || row.NOMOR || row.Kpj || row.kpj || row.KPJ;
             const namaRaw = row.Nama || row.nama || row.NAMA;
             const identitasRaw = row.Identitas || row.identitas || row.IDENTITAS || row.Nik || row.nik || row.NIK;
-            const tglLahirRaw = row["Tanggal Lahir"] || row.tanggal_lahir || row.TANGGAL_LAHIR || row.Lahir || row.lahir;
-            const alamatRaw = row.Alamat || row.alamat || row.ALAMAT;
+            
+            const tglLahirRaw = 
+              row["Tanggal Lahir"] || 
+              row.tanggal_lahir || 
+              row.TANGGAL_LAHIR || 
+              row.Lahir || 
+              row.lahir ||
+              row["Tempat, Tanggal Lahir"] ||
+              row["TEMPAT, TANGGAL LAHIR"] ||
+              row["tempat, tanggal lahir"] ||
+              row["Tempat Tanggal Lahir"] ||
+              row["TEMPAT TANGGAL LAHIR"] ||
+              row["tempat tanggal lahir"] ||
+              row.Ttl ||
+              row.ttl ||
+              row.TTL ||
+              row["Tgl Lahir"] ||
+              row["TGL LAHIR"] ||
+              row["tgl lahir"];
+
+            let alamatRaw = row.Alamat || row.alamat || row.ALAMAT;
+            if (!alamatRaw) {
+              const kabRaw = row.Kabupaten || row.kabupaten || row.KABUPATEN || row["Kabupaten/Kota"] || row["KABUPATEN/KOTA"] || row["Kabupaten / Kota"] || row.Kota || row.kota || row.KOTA;
+              const provRaw = row.Provinsi || row.provinsi || row.PROVINSI;
+              if (kabRaw || provRaw) {
+                alamatRaw = [kabRaw, provRaw].filter(Boolean).join(", ");
+              }
+            }
+
             const tglUpdateRaw = row["Tanggal Update"] || row.tanggal_update || row.TANGGAL_UPDATE || row.Update || row.update;
             const saldoRaw = row.Saldo || row.saldo || row.SALDO;
             const statusRaw = row.Status || row.status || row.STATUS;
@@ -426,7 +509,7 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
               nomor: nomorStr,
               nama: String(namaRaw || "").toUpperCase(),
               identitas: String(identitasRaw || ""),
-              tanggalLahir: String(tglLahirRaw || ""),
+              tanggalLahir: parseExcelDate(tglLahirRaw),
               alamat: String(alamatRaw || ""),
               tanggalUpdate: String(tglUpdateRaw || new Date().toLocaleDateString("id-ID")),
               saldo: parseSaldoValue(saldoRaw),

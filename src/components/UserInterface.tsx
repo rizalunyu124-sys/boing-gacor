@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { MasterData, Token } from "../types";
-import { query, where, getDocs, doc, setDoc, writeBatch } from "firebase/firestore";
+import { query, where, getDocs, doc, setDoc, writeBatch, getDoc, limit } from "firebase/firestore";
 import { masterDataCol, saveHistory, generateRandomKPJData } from "../utils/db";
 import { db } from "../firebase";
 import * as XLSX from "xlsx";
@@ -695,7 +695,76 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
         birthPlace = firstWord.toUpperCase();
       }
     }
-    const ttl = `${birthPlace}, ${sanitizeText(row.tanggalLahir) || "26-05-1988"}`;
+
+    // Clean and extract only the date part of the birthdate
+    let cleanTglLahir = "";
+    const rawTglLahir = sanitizeText(row.tanggalLahir);
+    if (rawTglLahir) {
+      // 1. Direct Regex matching of YYYY-MM-DD
+      const matchYmd = rawTglLahir.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+      // 2. Direct Regex matching of DD-MM-YYYY (handles ", 10-03-1992", "KUIN, 26-05-1988", etc.)
+      const matchDmy = rawTglLahir.match(/(\d{1,2})[-/.\s](\d{1,2})[-/.\s](\d{2,4})/);
+
+      if (matchYmd) {
+        const y = matchYmd[1];
+        const m = matchYmd[2].padStart(2, "0");
+        const d = matchYmd[3].padStart(2, "0");
+        cleanTglLahir = `${d}-${m}-${y}`;
+      } else if (matchDmy) {
+        const d = matchDmy[1].padStart(2, "0");
+        const m = matchDmy[2].padStart(2, "0");
+        let y = matchDmy[3];
+        if (y.length === 2) {
+          y = parseInt(y) > 30 ? "19" + y : "20" + y;
+        }
+        cleanTglLahir = `${d}-${m}-${y}`;
+      } else {
+        // Fallback: strip place if present
+        let temp = rawTglLahir;
+        if (temp.includes(",")) {
+          const parts = temp.split(",");
+          const datePart = parts[parts.length - 1]?.trim();
+          if (datePart) {
+            temp = datePart;
+          }
+        }
+        cleanTglLahir = temp;
+      }
+    }
+
+    // If still empty or invalid, try to parse from NIK (identitas)
+    if ((!cleanTglLahir || cleanTglLahir === "26-05-1988") && nik) {
+      const cleanNik = nik.replace(/\D/g, "");
+      if (cleanNik.length === 16) {
+        const dayPart = parseInt(cleanNik.substring(6, 8), 10);
+        const monthPart = parseInt(cleanNik.substring(8, 10), 10);
+        const yearPart = parseInt(cleanNik.substring(10, 12), 10);
+        if (!isNaN(dayPart) && !isNaN(monthPart) && !isNaN(yearPart)) {
+          let d = dayPart;
+          if (d > 40) d -= 40; // female adjustment
+          if (d >= 1 && d <= 31 && monthPart >= 1 && monthPart <= 12) {
+            const ddStr = String(d).padStart(2, "0");
+            const mmStr = String(monthPart).padStart(2, "0");
+            // Workers in BPJS Ketenagakerjaan are typically aged 15-75.
+            // If yearPart <= 11 (meaning born in 2011 or earlier), they are 15 or older.
+            const yyyy = yearPart <= 11 ? 2000 + yearPart : 1900 + yearPart;
+            cleanTglLahir = `${ddStr}-${mmStr}-${yyyy}`;
+          }
+        }
+      }
+    }
+
+    // If still empty or fallback is "26-05-1988", generate a deterministic unique date based on KPJ number so dates are varied and not identical!
+    if (!cleanTglLahir || cleanTglLahir === "26-05-1988") {
+      let h = 0;
+      for (let i = 0; i < kpj.length; i++) h += kpj.charCodeAt(i);
+      const d = String(1 + (h % 28)).padStart(2, "0");
+      const m = String(1 + ((h >> 2) % 12)).padStart(2, "0");
+      const y = String(1975 + ((h >> 4) % 25));
+      cleanTglLahir = `${d}-${m}-${y}`;
+    }
+
+    const ttl = `${birthPlace}, ${cleanTglLahir}`;
 
     // Deterministic Mother's Name (Ibu Kandung)
     const IBU_NAMES = ["ROHANI", "SITI AMINAH", "NUR HASANAH", "WULAN SARI", "KARTIKA DEWI", "PATIMAH", "SUPRIATIN", "TUTI ALAWIDAH", "LILIS HERLINA", "SRI WAHYUNI"];
@@ -934,15 +1003,6 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       setTableSearch("");
       setSelectedRowIds([]);
 
-      // Fetch all database admin entries
-      const adminSnap = await getDocs(masterDataCol);
-      if (adminSnap.empty) {
-        showToast("Sinkronisasi Gagal: Database Excel kosong! Silakan hubungi Admin untuk mengimpor file Excel KPJ terlebih dahulu.", "error");
-        setScreen("INPUT");
-        return;
-      }
-      const adminRows: MasterData[] = adminSnap.docs.map(d => d.data() as MasterData);
-
       const sanitizeMasterData = (row: Partial<MasterData>): MasterData => {
         return {
           nomor: String(row.nomor || "").trim(),
@@ -959,23 +1019,57 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
         };
       };
 
-      // Separate actual imported admin Excel rows (those without isSimulated === true)
-      const actualExcelRows = adminRows
-        .filter(row => row.isSimulated !== true)
-        .map(row => sanitizeMasterData(row));
+      // 1. Search for exact match by document ID and by "nomor" field
+      let exactMatch: MasterData | null = null;
+      const cleanNomor = nomor.trim().replace(/\D/g, "");
 
-      // Year prefix is the first 2 digits of the user's queried KPJ number
+      if (cleanNomor) {
+        // Try direct ID fetch
+        const docRef = doc(db, "master_data", cleanNomor);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          exactMatch = sanitizeMasterData(docSnap.data() as MasterData);
+        } else {
+          // Try query by nomor field
+          const qExact = query(masterDataCol, where("nomor", "==", cleanNomor), limit(1));
+          const qSnap = await getDocs(qExact);
+          if (!qSnap.empty) {
+            exactMatch = sanitizeMasterData(qSnap.docs[0].data() as MasterData);
+          }
+        }
+      }
+
+      // 2. Fetch up to 100 rows with the same yearPrefix for matching rows
       const yearPrefix = cleanKpj.substring(0, 2) || "24";
+      let matchedRows: MasterData[] = [];
 
-      // Match only rows under that yearPrefix
-      const matchedRows = actualExcelRows.filter(row => {
-        const rowKpj = row.nomor.replace(/\D/g, "");
-        return rowKpj.startsWith(yearPrefix);
-      });
+      if (yearPrefix) {
+        const prefixQ = query(
+          masterDataCol,
+          where("nomor", ">=", yearPrefix),
+          where("nomor", "<", yearPrefix + "\uf8ff"),
+          limit(100)
+        );
+        const prefixSnap = await getDocs(prefixQ);
+        prefixSnap.forEach(d => {
+          const row = sanitizeMasterData(d.data() as MasterData);
+          if (row.isSimulated !== true) {
+            matchedRows.push(row);
+          }
+        });
+      }
 
-      // Find the primaryData (exact match if exists, otherwise first matched row, or null)
-      const cleanNomor = nomor.trim().replace(/\s+/g, "");
-      const exactMatch = matchedRows.find(row => row.nomor.replace(/\s+/g, "") === cleanNomor);
+      // Force the exactMatch to be at index 0 of the result rows so it is displayed immediately
+      if (exactMatch) {
+        const alreadyExists = matchedRows.some(row => row.nomor.replace(/\D/g, "") === cleanNomor);
+        if (alreadyExists) {
+          const otherMatchedRows = matchedRows.filter(row => row.nomor.replace(/\D/g, "") !== cleanNomor);
+          matchedRows = [exactMatch, ...otherMatchedRows];
+        } else {
+          matchedRows = [exactMatch, ...matchedRows];
+        }
+      }
+
       const primaryData = exactMatch || (matchedRows.length > 0 ? matchedRows[0] : null);
 
       setResultData(primaryData);
