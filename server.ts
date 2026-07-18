@@ -6,9 +6,18 @@ import fs from "fs";
 const app = express();
 const PORT = 3000;
 
-// Resolve __dirname under ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Resolve paths in a way that works in both ES Modules (dev) and CommonJS (bundled prod)
+let resolvedFilename = "";
+let resolvedDirname = "";
+
+if (typeof import.meta !== "undefined" && import.meta.url) {
+  resolvedFilename = fileURLToPath(import.meta.url);
+  resolvedDirname = path.dirname(resolvedFilename);
+} else {
+  // In CommonJS, use the globally available __filename and __dirname
+  resolvedFilename = typeof __filename !== "undefined" ? __filename : "";
+  resolvedDirname = typeof __dirname !== "undefined" ? __dirname : "";
+}
 
 // Serve custom health API or any other API routes here
 app.get("/api/health", (req, res) => {
@@ -43,10 +52,10 @@ if (isDevelopment) {
   // Robust path resolution for dist folder on Vercel
   let distPath = path.join(process.cwd(), "dist");
   if (!fs.existsSync(distPath)) {
-    distPath = path.join(__dirname, "dist");
+    distPath = path.join(resolvedDirname, "dist");
   }
   if (!fs.existsSync(distPath)) {
-    distPath = path.join(__dirname, "..", "dist");
+    distPath = path.join(resolvedDirname, "..", "dist");
   }
 
   console.log(`Resolved static dist path: ${distPath}`);
