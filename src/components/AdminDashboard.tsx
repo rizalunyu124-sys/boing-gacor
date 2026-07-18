@@ -535,6 +535,10 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
             const keteranganRaw = row.Keterangan || row.keterangan || row.KETERANGAN;
             const pesanRaw = row.Pesan || row.pesan || row.PESAN;
 
+            // Optional custom columns
+            const ibuKandungRaw = row["Ibu Kandung"] || row.ibu_kandung || row.ibukandung || row["Nama Ibu"] || row.ibu || row.IBU || row.IbuKandung;
+            const jenisKelaminRaw = row["Jenis Kelamin"] || row.jenis_kelamin || row.jeniskelamin || row.Gender || row.gender || row["L/P"] || row.lp || row.LP || row.Sex || row.sex;
+
             if (!nomorRaw) continue; // Skip rows without KPJ / Nomor
 
             const nomorStr = String(nomorRaw).trim();
@@ -598,7 +602,9 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
               saldo: parseSaldoValue(saldoRaw),
               status: String(statusRaw || "1"),
               keterangan: String(keteranganRaw || ""),
-              pesan: String(pesanRaw || "")
+              pesan: String(pesanRaw || ""),
+              ibuKandung: ibuKandungRaw ? String(ibuKandungRaw).trim().toUpperCase() : undefined,
+              jenisKelamin: jenisKelaminRaw ? String(jenisKelaminRaw).trim().toUpperCase() : undefined,
             };
 
             const docRef = doc(db, "master_data", record.nomor);

@@ -18,7 +18,10 @@ export interface MasterData {
   status: string;
   keterangan: string;
   pesan: string;
+  ibuKandung?: string;
+  jenisKelamin?: string;
   isSimulated?: boolean;
+  isFallbackNotRegistered?: boolean;
 }
 
 export interface HistoryActivity {

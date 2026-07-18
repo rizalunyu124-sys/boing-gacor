@@ -633,6 +633,8 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
   const [tableSearch, setTableSearch] = useState("");
   const [visibleRowsCount, setVisibleRowsCount] = useState(0);
   const [isAuto100, setIsAuto100] = useState(true);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
 
   // Selection states
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
@@ -654,6 +656,24 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
 
   // Helper mapping function to the exact 17 columns format
   const mapToUserFormat = (row: MasterData) => {
+    if (row.isFallbackNotRegistered) {
+      return {
+        kpj: row.nomor,
+        nama: "-",
+        nik: "-",
+        jenisKelamin: "-",
+        ttl: "-",
+        ibuKandung: "-",
+        provinsi: "-",
+        kabupaten: "-",
+        statusJMO: "❌ TIDAK TERDAFTAR",
+        saldoJHT: "-",
+        jmlKartu: 0,
+        keterangan: "Data tidak ditemukan di database Excel Admin",
+        legendInfo: "-"
+      };
+    }
+
     // Sanitize function to remove any occurence of "contoh", "contoh:", "(contoh)", etc.
     const sanitizeText = (txt: string | undefined | null): string => {
       if (!txt) return "";
@@ -672,7 +692,9 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
     
     // Deterministic Gender (Jenis Kelamin)
     let jenisKelamin = "LAKI-LAKI";
-    if (nik && nik.length >= 8) {
+    if (row.jenisKelamin) {
+      jenisKelamin = row.jenisKelamin.trim().toUpperCase();
+    } else if (nik && nik.length >= 8) {
       const dayDigits = parseInt(nik.substring(6, 8));
       if (!isNaN(dayDigits) && dayDigits > 40) {
         jenisKelamin = "PEREMPUAN";
@@ -687,18 +709,28 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
 
     // Deterministic Place of birth (TTL)
     let birthPlace = "LASUSUA";
-    const rawAlamat = sanitizeText(row.alamat);
-    if (rawAlamat && rawAlamat !== "ALAMAT TIDAK ADA") {
-      const cleanAddr = rawAlamat.replace(/^(KEL\.|JL\.|KAB\.|KOTA)\s+/i, "");
-      const firstWord = cleanAddr.split(/[\s,]+/)[0];
-      if (firstWord && firstWord.length > 2) {
-        birthPlace = firstWord.toUpperCase();
+    const rawTglLahir = sanitizeText(row.tanggalLahir);
+    if (rawTglLahir && rawTglLahir.includes(",")) {
+      const parts = rawTglLahir.split(",");
+      const placePart = parts[0]?.trim();
+      if (placePart && isNaN(Number(placePart)) && placePart.length > 2) {
+        birthPlace = placePart.toUpperCase();
+      }
+    }
+
+    if (birthPlace === "LASUSUA") {
+      const rawAlamat = sanitizeText(row.alamat);
+      if (rawAlamat && rawAlamat !== "ALAMAT TIDAK ADA") {
+        const cleanAddr = rawAlamat.replace(/^(KEL\.|JL\.|KAB\.|KOTA)\s+/i, "");
+        const firstWord = cleanAddr.split(/[\s,]+/)[0];
+        if (firstWord && firstWord.length > 2) {
+          birthPlace = firstWord.toUpperCase();
+        }
       }
     }
 
     // Clean and extract only the date part of the birthdate
     let cleanTglLahir = "";
-    const rawTglLahir = sanitizeText(row.tanggalLahir);
     if (rawTglLahir) {
       // 1. Direct Regex matching of YYYY-MM-DD
       const matchYmd = rawTglLahir.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
@@ -733,7 +765,7 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
     }
 
     // If still empty or invalid, try to parse from NIK (identitas)
-    if ((!cleanTglLahir || cleanTglLahir === "26-05-1988") && nik) {
+    if ((!cleanTglLahir || (cleanTglLahir === "26-05-1988" && row.isSimulated)) && nik) {
       const cleanNik = nik.replace(/\D/g, "");
       if (cleanNik.length === 16) {
         const dayPart = parseInt(cleanNik.substring(6, 8), 10);
@@ -754,8 +786,8 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       }
     }
 
-    // If still empty or fallback is "26-05-1988", generate a deterministic unique date based on KPJ number so dates are varied and not identical!
-    if (!cleanTglLahir || cleanTglLahir === "26-05-1988") {
+    // If still empty or fallback is "26-05-1988" and is simulated, generate a deterministic unique date based on KPJ number
+    if (!cleanTglLahir || (cleanTglLahir === "26-05-1988" && row.isSimulated)) {
       let h = 0;
       for (let i = 0; i < kpj.length; i++) h += kpj.charCodeAt(i);
       const d = String(1 + (h % 28)).padStart(2, "0");
@@ -767,13 +799,18 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
     const ttl = `${birthPlace}, ${cleanTglLahir}`;
 
     // Deterministic Mother's Name (Ibu Kandung)
-    const IBU_NAMES = ["ROHANI", "SITI AMINAH", "NUR HASANAH", "WULAN SARI", "KARTIKA DEWI", "PATIMAH", "SUPRIATIN", "TUTI ALAWIDAH", "LILIS HERLINA", "SRI WAHYUNI"];
-    let nameHash = 0;
-    for (let i = 0; i < kpj.length; i++) nameHash += kpj.charCodeAt(i);
-    let ibuKandung = IBU_NAMES[nameHash % IBU_NAMES.length];
+    let ibuKandung = "ROHANI";
+    if (row.ibuKandung) {
+      ibuKandung = row.ibuKandung.trim().toUpperCase();
+    } else {
+      const IBU_NAMES = ["ROHANI", "SITI AMINAH", "NUR HASANAH", "WULAN SARI", "KARTIKA DEWI", "PATIMAH", "SUPRIATIN", "TUTI ALAWIDAH", "LILIS HERLINA", "SRI WAHYUNI"];
+      let nameHash = 0;
+      for (let i = 0; i < kpj.length; i++) nameHash += kpj.charCodeAt(i);
+      ibuKandung = IBU_NAMES[nameHash % IBU_NAMES.length];
+    }
 
     // Alamat details - Only Province and Kabupaten (KPU compliant)
-    const locResult = getKabupatenProvinsi(rawAlamat, nik, kpj);
+    const locResult = getKabupatenProvinsi(row.alamat, nik, kpj);
     let provinsi = locResult.provinsi;
     let kabupaten = locResult.kabupaten;
 
@@ -784,9 +821,6 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       jenisKelamin = "LAKI-LAKI";
       ibuKandung = "ROHANI";
     }
-
-    // Status Lasik
-    const statusLasik = row.status === "1" ? "LANJUT_JMO" : "GAGAL_LASIK";
 
     // Status JMO
     const statusJMO = row.status === "1" ? "❌ SUDAH TERDAFTAR" : "✅ SIAP DAFTAR";
@@ -887,7 +921,6 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       ibuKandung,
       provinsi,
       kabupaten,
-      statusLasik,
       statusJMO,
       saldoJHT,
       jmlKartu,
@@ -1039,38 +1072,76 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
         }
       }
 
-      // 2. Fetch up to 100 rows with the same yearPrefix for matching rows
-      const yearPrefix = cleanKpj.substring(0, 2) || "24";
-      let matchedRows: MasterData[] = [];
+      // If exact match not found, we create a fallback record with the user's entered KPJ and dashes for other fields
+      let isFallbackUsed = false;
+      if (!exactMatch) {
+        isFallbackUsed = true;
+        exactMatch = {
+          nomor: cleanNomor || nomor.trim(),
+          nama: "-",
+          identitas: "-",
+          tanggalLahir: "-",
+          alamat: "-",
+          tanggalUpdate: new Date().toLocaleDateString("id-ID"),
+          saldo: 0,
+          status: "0",
+          keterangan: "Nomor Tidak Akurat (Tidak Ditemukan)",
+          pesan: "Tidak Terdaftar di Excel Admin",
+          isFallbackNotRegistered: true
+        };
+      }
 
-      if (yearPrefix) {
-        const prefixQ = query(
-          masterDataCol,
-          where("nomor", ">=", yearPrefix),
-          where("nomor", "<", yearPrefix + "\uf8ff"),
-          limit(100)
-        );
-        const prefixSnap = await getDocs(prefixQ);
-        prefixSnap.forEach(d => {
-          const row = sanitizeMasterData(d.data() as MasterData);
-          if (row.isSimulated !== true) {
-            matchedRows.push(row);
-          }
+      // 2. Fetch other real master data rows matching the first 2 digits of the searched KPJ
+      const prefix = cleanNomor.substring(0, 2) || "24";
+      let listForRows: MasterData[] = [];
+
+      const qPrefix = query(
+        masterDataCol,
+        where("nomor", ">=", prefix),
+        where("nomor", "<=", prefix + "\uf8ff"),
+        limit(500)
+      );
+      const prefixSnap = await getDocs(qPrefix);
+      prefixSnap.forEach((doc) => {
+        listForRows.push(sanitizeMasterData(doc.data() as MasterData));
+      });
+
+      // Fallback to general rows if no data matches the 2-digit prefix
+      if (listForRows.length === 0) {
+        const qAll = query(masterDataCol, limit(500));
+        const qAllSnap = await getDocs(qAll);
+        qAllSnap.forEach((doc) => {
+          listForRows.push(sanitizeMasterData(doc.data() as MasterData));
         });
       }
 
-      // Force the exactMatch to be at index 0 of the result rows so it is displayed immediately
-      if (exactMatch) {
-        const alreadyExists = matchedRows.some(row => row.nomor.replace(/\D/g, "") === cleanNomor);
-        if (alreadyExists) {
-          const otherMatchedRows = matchedRows.filter(row => row.nomor.replace(/\D/g, "") !== cleanNomor);
-          matchedRows = [exactMatch, ...otherMatchedRows];
+      // Filter out exact match (or the searched fallback number) from other real rows
+      const otherRealRows = listForRows.filter(row => row.nomor !== cleanNomor);
+
+      // Implementation of "Atau setiap proses kedua dan seterusnya akan dimulai bergantian dalam tiap baris bergantian mengambil persepuluh baris akan mengisi data paling atas"
+      const sessionSearchCount = parseInt(localStorage.getItem("session_search_count") || "0", 10) || 0;
+      const nextCount = sessionSearchCount + 1;
+      localStorage.setItem("session_search_count", String(nextCount));
+
+      let secondaryRows: MasterData[] = [];
+      if (otherRealRows.length > 0) {
+        if (nextCount >= 2) {
+          // Rotate by 10 rows for each subsequent search
+          const offset = ((nextCount - 1) * 10) % otherRealRows.length;
+          secondaryRows = [...otherRealRows.slice(offset), ...otherRealRows.slice(0, offset)];
         } else {
-          matchedRows = [exactMatch, ...matchedRows];
+          // First search: use database order
+          secondaryRows = [...otherRealRows];
         }
       }
 
-      const primaryData = exactMatch || (matchedRows.length > 0 ? matchedRows[0] : null);
+      // Build matched rows: primary row (exact match or fallback) always at the top, then others up to 100 max
+      const matchedRows: MasterData[] = [exactMatch];
+      if (secondaryRows.length > 0) {
+        matchedRows.push(...secondaryRows.slice(0, 99));
+      }
+
+      const primaryData = exactMatch;
 
       setResultData(primaryData);
       setResultRows(matchedRows);
@@ -1094,20 +1165,43 @@ export default function UserInterface({ token, onLogout, showToast }: UserInterf
       }
 
       setScreen("RESULT");
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast("Gagal mengambil data dari server!", "error");
+      const errMsg = err.message || "Gagal mengambil data dari server!";
+      showToast(errMsg, "error");
+      setSearchError(errMsg);
       setScreen("INPUT");
     }
   };
 
-  const handleProses = (e: React.FormEvent) => {
+  const handleProses = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nomor.trim()) {
       showToast("Silahkan masukkan nomor terlebih dahulu!", "error");
       return;
     }
-    setScreen("PROCESSING");
+
+    setIsChecking(true);
+    setSearchError(null);
+
+    try {
+      const cleanNomor = nomor.trim().replace(/\D/g, "");
+      if (!cleanNomor) {
+        throw new Error("Format nomor KPJ tidak valid! Harus mengandung angka.");
+      }
+      if (cleanNomor.length < 2) {
+        throw new Error("Nomor KPJ minimal terdiri dari 2 angka untuk mencocokkan kode tahun.");
+      }
+
+      setScreen("PROCESSING");
+    } catch (err: any) {
+      console.error(err);
+      const errMsg = err.message || "Gagal memproses nomor KPJ.";
+      setSearchError(errMsg);
+      showToast(errMsg, "error");
+    } finally {
+      setIsChecking(false);
+    }
   };
 
   // Helper formatting IDR currency
@@ -1272,11 +1366,7 @@ CONTOH DATA HASIL PROSES:
         "Jenis Kelamin": u.jenisKelamin,
         "TTL": u.ttl,
         "Kabupaten": u.kabupaten,
-        "Provinsi": u.provinsi,
-        "Status Lasik": u.statusLasik,
-        "Status JMO": u.statusJMO,
-        "Jml Kartu": u.jmlKartu,
-        "LEGEND / INFO": u.legendInfo || ""
+        "Provinsi": u.provinsi
       };
     });
 
@@ -1299,7 +1389,7 @@ CONTOH DATA HASIL PROSES:
       docPdf.setFontSize(9);
       docPdf.text(`Dihasilkan pada: ${new Date().toLocaleString("id-ID")} | Total: ${rows.length} data`, 14, 21);
       
-      const headers = ['No', 'KPJ', 'Nama', 'NIK', 'L/P', 'TTL', 'Kabupaten', 'Provinsi', 'Status Lasik', 'Status JMO', 'Jml Kartu'];
+      const headers = ['No', 'KPJ', 'Nama', 'NIK', 'L/P', 'TTL', 'Kabupaten', 'Provinsi'];
       const bodyData = formattedData.map((item, idx) => [
         idx + 1,
         item["KPJ"],
@@ -1308,10 +1398,7 @@ CONTOH DATA HASIL PROSES:
         item["Jenis Kelamin"],
         item["TTL"],
         item["Kabupaten"],
-        item["Provinsi"],
-        item["Status Lasik"],
-        item["Status JMO"],
-        item["Jml Kartu"]
+        item["Provinsi"]
       ]);
 
       autoTable(docPdf, {
@@ -1456,11 +1543,22 @@ DATA HASIL PROSES:
                   <input
                     type="text"
                     value={nomor}
+                    disabled={isChecking}
                     onChange={(e) => setNomor(e.target.value)}
                     placeholder="Masukkan Nomor"
                     className="w-full bg-white/5 border border-white/10 text-white rounded-2xl py-4 pl-12 pr-4 text-center font-bold tracking-wider placeholder:text-gray-500 placeholder:font-normal placeholder:tracking-normal focus:outline-none focus:border-amber-500/50 focus:ring-2 focus:ring-amber-500/20 transition-all font-sans"
                   />
                 </div>
+
+                {searchError && (
+                  <div className="flex items-start gap-3 bg-rose-500/10 border border-rose-500/20 text-rose-300 rounded-2xl p-4 text-xs animate-fadeIn">
+                    <AlertCircle className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-bold">Terjadi Kesalahan</p>
+                      <p className="mt-1 text-rose-200">{searchError}</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Real Excel Admin Verification Badge */}
                 <div className="flex items-center justify-between bg-white/5 border border-white/5 rounded-2xl p-3 px-4 text-xs">
@@ -1468,12 +1566,23 @@ DATA HASIL PROSES:
                   <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-lg font-bold text-[10px]">REAL EXCEL ADMIN</span>
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full bg-gradient-to-r from-pink-500 via-fuchsia-500 to-indigo-600 hover:from-pink-600 hover:to-indigo-700 text-white font-bold py-4 px-6 rounded-2xl transition duration-300 shadow-lg shadow-pink-500/10 active:scale-[0.98] cursor-pointer"
-                >
-                  PROSES
-                </button>
+                {isChecking ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full bg-gradient-to-r from-pink-500 via-fuchsia-500 to-indigo-600 text-white font-bold py-4 px-6 rounded-2xl opacity-85 flex items-center justify-center gap-2 cursor-not-allowed shadow-lg"
+                  >
+                    <RefreshCw className="w-5 h-5 animate-spin" />
+                    MEMPROSES VALIDASI...
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="w-full bg-gradient-to-r from-pink-500 via-fuchsia-500 to-indigo-600 hover:from-pink-600 hover:to-indigo-700 text-white font-bold py-4 px-6 rounded-2xl transition duration-300 shadow-lg shadow-pink-500/10 active:scale-[0.98] cursor-pointer"
+                  >
+                    PROSES
+                  </button>
+                )}
               </form>
 
               {/* Guide/Panduan Card */}
@@ -1770,10 +1879,6 @@ DATA HASIL PROSES:
                           <th className="p-3">TTL</th>
                           <th className="p-3">Kabupaten</th>
                           <th className="p-3">Provinsi</th>
-                          <th className="p-3">Status Lasik</th>
-                          <th className="p-3">Status JMO</th>
-                          <th className="p-3">Jml Kartu</th>
-                          <th className="p-3">LEGEND / INFO</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-slate-700 whitespace-nowrap">
@@ -1820,16 +1925,12 @@ DATA HASIL PROSES:
                                 <td className="p-3 text-slate-700 font-mono">{u.ttl}</td>
                                 <td className="p-3 text-slate-600">{u.kabupaten}</td>
                                 <td className="p-3 text-slate-600">{u.provinsi}</td>
-                                <td className="p-3 font-semibold font-mono text-indigo-600">{u.statusLasik}</td>
-                                <td className="p-3 font-bold text-rose-600">{u.statusJMO}</td>
-                                <td className="p-3 text-center text-slate-800 font-bold font-mono">{u.jmlKartu}</td>
-                                <td className="p-3 text-slate-500 italic text-xs">{u.legendInfo || "-"}</td>
                               </tr>
                             );
                           })
                         ) : (
                           <tr>
-                            <td colSpan={13} className="p-8 text-center text-slate-400 italic">
+                            <td colSpan={9} className="p-8 text-center text-slate-400 italic">
                               Tidak ada data yang cocok dengan pencarian Anda atau data sedang dimuat secara berurutan...
                             </td>
                           </tr>
