@@ -1275,9 +1275,7 @@ CONTOH DATA HASIL PROSES:
         "Provinsi": u.provinsi,
         "Status Lasik": u.statusLasik,
         "Status JMO": u.statusJMO,
-        "Saldo JHT": u.saldoJHT,
         "Jml Kartu": u.jmlKartu,
-        "Keterangan": u.keterangan,
         "LEGEND / INFO": u.legendInfo || ""
       };
     });
@@ -1301,7 +1299,7 @@ CONTOH DATA HASIL PROSES:
       docPdf.setFontSize(9);
       docPdf.text(`Dihasilkan pada: ${new Date().toLocaleString("id-ID")} | Total: ${rows.length} data`, 14, 21);
       
-      const headers = ['No', 'KPJ', 'Nama', 'NIK', 'L/P', 'TTL', 'Kabupaten', 'Provinsi', 'Status Lasik', 'Status JMO', 'Saldo JHT', 'Jml Kartu', 'Keterangan'];
+      const headers = ['No', 'KPJ', 'Nama', 'NIK', 'L/P', 'TTL', 'Kabupaten', 'Provinsi', 'Status Lasik', 'Status JMO', 'Jml Kartu'];
       const bodyData = formattedData.map((item, idx) => [
         idx + 1,
         item["KPJ"],
@@ -1313,9 +1311,7 @@ CONTOH DATA HASIL PROSES:
         item["Provinsi"],
         item["Status Lasik"],
         item["Status JMO"],
-        item["Saldo JHT"],
-        item["Jml Kartu"],
-        item["Keterangan"]
+        item["Jml Kartu"]
       ]);
 
       autoTable(docPdf, {
@@ -1365,7 +1361,7 @@ DATA HASIL PROSES:
 `.trim();
 
       formattedData.forEach((row, i) => {
-        text += `\n[${i + 1}] KPJ: ${row["KPJ"]} | Nama: ${row["Nama"]} | Saldo: ${row["Saldo JHT"]} | Ket: ${row["Keterangan"]}`;
+        text += `\n[${i + 1}] KPJ: ${row["KPJ"]} | Nama: ${row["Nama"]}`;
       });
 
       navigator.clipboard.writeText(text);
@@ -1776,9 +1772,7 @@ DATA HASIL PROSES:
                           <th className="p-3">Provinsi</th>
                           <th className="p-3">Status Lasik</th>
                           <th className="p-3">Status JMO</th>
-                          <th className="p-3">Saldo JHT</th>
                           <th className="p-3">Jml Kartu</th>
-                          <th className="p-3">Keterangan</th>
                           <th className="p-3">LEGEND / INFO</th>
                         </tr>
                       </thead>
@@ -1828,16 +1822,14 @@ DATA HASIL PROSES:
                                 <td className="p-3 text-slate-600">{u.provinsi}</td>
                                 <td className="p-3 font-semibold font-mono text-indigo-600">{u.statusLasik}</td>
                                 <td className="p-3 font-bold text-rose-600">{u.statusJMO}</td>
-                                <td className="p-3 font-black text-emerald-600 font-mono">{u.saldoJHT}</td>
                                 <td className="p-3 text-center text-slate-800 font-bold font-mono">{u.jmlKartu}</td>
-                                <td className="p-3 text-slate-700 font-semibold text-xs">{u.keterangan}</td>
                                 <td className="p-3 text-slate-500 italic text-xs">{u.legendInfo || "-"}</td>
                               </tr>
                             );
                           })
                         ) : (
                           <tr>
-                            <td colSpan={15} className="p-8 text-center text-slate-400 italic">
+                            <td colSpan={13} className="p-8 text-center text-slate-400 italic">
                               Tidak ada data yang cocok dengan pencarian Anda atau data sedang dimuat secara berurutan...
                             </td>
                           </tr>

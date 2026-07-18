@@ -29,7 +29,10 @@ import {
   onSnapshot, 
   query, 
   orderBy, 
-  writeBatch 
+  writeBatch,
+  limit,
+  where,
+  getCountFromServer
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { 
@@ -53,6 +56,7 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
   // Database States
   const [tokens, setTokens] = useState<Token[]>([]);
   const [masterData, setMasterData] = useState<MasterData[]>([]);
+  const [totalMasterCount, setTotalMasterCount] = useState<number>(0);
   const [history, setHistory] = useState<HistoryActivity[]>([]);
 
   // UI Control States
@@ -63,6 +67,16 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
   const [isUploading, setIsUploading] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch total count of master_data
+  const fetchTotalCount = async () => {
+    try {
+      const snap = await getCountFromServer(masterDataCol);
+      setTotalMasterCount(snap.data().count);
+    } catch (err) {
+      console.error("Gagal mengambil jumlah total data:", err);
+    }
+  };
 
   // Firestore Real-Time Subscriptions
   useEffect(() => {
@@ -78,11 +92,16 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
       setTokens(sorted);
     });
 
-    // 2. Listen for Master Data (KPJ Excel Admin)
-    const unsubMaster = onSnapshot(masterDataCol, (snap) => {
-      const list = snap.docs.map(d => d.data() as MasterData);
-      setMasterData(list);
-    });
+    // 2. Listen for Master Data (KPJ Excel Admin) - limited to first 100 rows
+    // Only subscribe to default limited set when searchQuery is empty
+    let unsubMaster: () => void = () => {};
+    if (searchQuery.trim() === "") {
+      const qMaster = query(masterDataCol, limit(100));
+      unsubMaster = onSnapshot(qMaster, (snap) => {
+        const list = snap.docs.map(d => d.data() as MasterData);
+        setMasterData(list);
+      });
+    }
 
     // 3. Listen for History (Aktivitas Pengguna)
     const unsubHist = onSnapshot(query(historyCol, orderBy("timestamp", "desc")), (snap) => {
@@ -90,12 +109,76 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
       setHistory(list);
     });
 
+    // Fetch initial total count
+    fetchTotalCount();
+
     return () => {
       unsubTokens();
       unsubMaster();
       unsubHist();
     };
-  }, []);
+  }, [searchQuery]);
+
+  // Debounced Search on Firestore (No. KPJ, Nama, NIK)
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q === "") return;
+
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        const results: MasterData[] = [];
+        const seenIds = new Set<string>();
+
+        const addResult = (d: MasterData) => {
+          if (!seenIds.has(d.nomor)) {
+            seenIds.add(d.nomor);
+            results.push(d);
+          }
+        };
+
+        // Search Query 1: by nomor (starts with searchQuery)
+        const qNomor = query(
+          masterDataCol,
+          where("nomor", ">=", q),
+          where("nomor", "<=", q + "\uf8ff"),
+          limit(50)
+        );
+        const snapNomor = await getDocs(qNomor);
+        snapNomor.forEach(doc => addResult(doc.data() as MasterData));
+
+        // Search Query 2: by nama (starts with uppercase searchQuery)
+        const qNama = query(
+          masterDataCol,
+          where("nama", ">=", q.toUpperCase()),
+          where("nama", "<=", q.toUpperCase() + "\uf8ff"),
+          limit(50)
+        );
+        const snapNama = await getDocs(qNama);
+        snapNama.forEach(doc => addResult(doc.data() as MasterData));
+
+        // Search Query 3: by identitas (starts with searchQuery)
+        const qIdentitas = query(
+          masterDataCol,
+          where("identitas", ">=", q),
+          where("identitas", "<=", q + "\uf8ff"),
+          limit(50)
+        );
+        const snapIdentitas = await getDocs(qIdentitas);
+        snapIdentitas.forEach(doc => addResult(doc.data() as MasterData));
+
+        setMasterData(results);
+      } catch (err) {
+        console.error("Gagal mencari data di Firestore:", err);
+      }
+    }, 400);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery]);
+
+  // Sync totalCount whenever masterData length changes (e.g., deletions or uploads)
+  useEffect(() => {
+    fetchTotalCount();
+  }, [masterData.length]);
 
   // Format IDR Currency
   const formatCurrency = (val: number) => {
@@ -624,7 +707,7 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
             </div>
             <div>
               <p className="text-xs text-gray-400 font-medium uppercase tracking-wider">Database Excel Admin</p>
-              <p className="text-2xl font-black text-white mt-0.5">{masterData.length}</p>
+              <p className="text-2xl font-black text-white mt-0.5">{totalMasterCount || masterData.length}</p>
               <p className="text-[10px] text-indigo-400 font-mono mt-0.5">KPJ TERPANEL PERMANEN</p>
             </div>
           </div>
@@ -735,7 +818,7 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
             <div className="space-y-3 pt-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-gray-300 uppercase tracking-wider">
-                  Data KPJ Tersimpan ({filteredMasterData.length})
+                  Data KPJ Tersimpan ({searchQuery.trim() ? filteredMasterData.length : totalMasterCount})
                 </span>
                 
                 <div className="relative w-48 sm:w-64">
@@ -759,7 +842,6 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
                       <th className="p-2.5">No. KPJ</th>
                       <th className="p-2.5">Nama</th>
                       <th className="p-2.5">NIK (Identitas)</th>
-                      <th className="p-2.5 text-right">Saldo</th>
                       <th className="p-2.5 text-right">Opsi</th>
                     </tr>
                   </thead>
@@ -769,7 +851,6 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
                         <td className="p-2.5 font-mono text-indigo-400 font-bold">{row.nomor}</td>
                         <td className="p-2.5 font-semibold text-gray-100">{row.nama}</td>
                         <td className="p-2.5 text-gray-400 font-mono">{row.identitas || "-"}</td>
-                        <td className="p-2.5 text-right font-bold text-emerald-400">{formatCurrency(row.saldo)}</td>
                         <td className="p-2.5 text-right">
                           <button
                             onClick={() => handleDeleteMasterDataRow(row.nomor)}
@@ -784,7 +865,7 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
                     
                     {filteredMasterData.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="p-8 text-center text-gray-500 italic">
+                        <td colSpan={4} className="p-8 text-center text-gray-500 italic">
                           Belum ada data Excel KPJ diimpor ke database.
                         </td>
                       </tr>
@@ -792,9 +873,9 @@ export default function AdminDashboard({ onLogout, showToast, theme, toggleTheme
                   </tbody>
                 </table>
               </div>
-              {filteredMasterData.length > 100 && (
+              {(filteredMasterData.length > 100 || (!searchQuery.trim() && totalMasterCount > 100)) && (
                 <p className="text-[10px] text-gray-500 text-right font-mono italic">
-                  Menampilkan 100 dari {filteredMasterData.length} total baris data.
+                  Menampilkan {Math.min(filteredMasterData.length, 100)} dari {searchQuery.trim() ? filteredMasterData.length : totalMasterCount} total baris data.
                 </p>
               )}
             </div>
