@@ -10,13 +10,15 @@ const PORT = 3000;
 let resolvedFilename = "";
 let resolvedDirname = "";
 
-if (typeof import.meta !== "undefined" && import.meta.url) {
+if (typeof __dirname !== "undefined") {
+  resolvedDirname = __dirname;
+  resolvedFilename = typeof __filename !== "undefined" ? __filename : "";
+} else if (typeof import.meta !== "undefined" && import.meta.url) {
   resolvedFilename = fileURLToPath(import.meta.url);
   resolvedDirname = path.dirname(resolvedFilename);
 } else {
-  // In CommonJS, use the globally available __filename and __dirname
-  resolvedFilename = typeof __filename !== "undefined" ? __filename : "";
-  resolvedDirname = typeof __dirname !== "undefined" ? __dirname : "";
+  resolvedDirname = process.cwd();
+  resolvedFilename = "";
 }
 
 // Serve custom health API or any other API routes here
