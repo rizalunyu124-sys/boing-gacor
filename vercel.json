@@ -2,11 +2,12 @@
   "version": 2,
   "builds": [
     {
+      "src": "dist/**",
+      "use": "@vercel/static"
+    },
+    {
       "src": "server.ts",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": ["dist/**"]
-      }
+      "use": "@vercel/node"
     }
   ],
   "routes": [
@@ -15,8 +16,20 @@
       "dest": "server.ts"
     },
     {
+      "src": "/assets/(.*)",
+      "dest": "dist/assets/$1"
+    },
+    {
+      "src": "/favicon.ico",
+      "dest": "dist/favicon.ico"
+    },
+    {
+      "src": "/favicon.png",
+      "dest": "dist/favicon.png"
+    },
+    {
       "src": "/(.*)",
-      "dest": "server.ts"
+      "dest": "dist/index.html"
     }
   ]
 }
